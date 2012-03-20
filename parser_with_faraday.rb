@@ -1,5 +1,5 @@
-require 'net/http'
-require 'json'
+require 'faraday'
+require 'faraday_middleware'
 
 FILMS_LIMIT = 150
 DOMAIN = "http://kinobaza.tv"
@@ -9,37 +9,39 @@ PATH_FOR_FILMS = "films/browse"
 
 class KinobazaParser
   def self.parse!
-    threads = []
+
+    connection = Faraday.new(:url => API_DOMAIN) do |builder|
+      builder.request  :url_encoded
+      builder.adapter  :net_http
+      builder.use FaradayMiddleware::ParseJson
+    end
+
     resulted_array = []
 
-    genres_json = Net::HTTP.get URI.parse("#{API_DOMAIN}/#{PATH_FOR_GENRES}")
-    genres = JSON.parse genres_json
+    genres = connection.get(PATH_FOR_GENRES).env[:body]
 
     begin
       genres.each do |genre|
-        threads << Thread.new do
-          resulted_array << parse_films(genre, threads)
-        end
-
-        # it seems that kinobaza's nginx think that it's a 
-        # ddos or like that, so we need little sleep
-        sleep 0.5
+       
+        resulted_array << parse_films(genre, connection)
       end
     rescue Exception => e
       p "sorry, but smth wrong: #{e}"
     end
-
-    threads.each {|thr| thr.join }
 
     result = resulted_array.to_json
 
     File.open("result.json", "w") { |file| file << result }
   end
 
-  def self.parse_films(genre, threads)
+  def self.parse_films(genre, connection)
     record = { id: genre['id'], name: genre['name'] }
-    films_json = Net::HTTP.get URI.parse("#{API_DOMAIN}/#{PATH_FOR_FILMS}?limit=#{FILMS_LIMIT}&genres=#{genre['id']}")
-    films = JSON.parse films_json
+    films_response = connection.get do |req|
+      req.url PATH_FOR_FILMS
+      req.params['limit'] = FILMS_LIMIT
+      req.params['genres'] = genre['id']
+    end
+    films = films_response.env[:body]
     record[:films] = films.collect { |f| { name: f['name'], url: "#{DOMAIN}/film/#{f['id']}" } }
     record
   end
